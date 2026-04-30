@@ -1,0 +1,126 @@
+name: Sync Fork with Upstream
+
+on:
+  schedule:
+    # 每天 UTC 2:00 自动同步（北京时间 10:00）
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_branch:
+        description: "上游分支名"
+        required: false
+        default: "main"
+      strategy:
+        description: "合并策略"
+        required: false
+        default: "merge"
+        type: choice
+        options:
+          - merge
+          - rebase
+
+env:
+  UPSTREAM_REPO: ${{ vars.UPSTREAM_REPO || 'basketikun/chatgpt2api' }}
+  UPSTREAM_BRANCH: ${{ inputs.upstream_branch || 'main' }}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream "https://github.com/${{ env.UPSTREAM_REPO }}.git"
+          echo "Upstream set to: ${{ env.UPSTREAM_REPO }}"
+
+      - name: Fetch upstream
+        run: |
+          git fetch upstream "${{ env.UPSTREAM_BRANCH }}"
+          echo "Fetched upstream/${{ env.UPSTREAM_BRANCH }}"
+
+      - name: Check for changes
+        id: check
+        run: |
+          LOCAL=$(git rev-parse HEAD)
+          UPSTREAM=$(git rev-parse "upstream/${{ env.UPSTREAM_BRANCH }}")
+
+          echo "Local:  $LOCAL"
+          echo "Upstream: $UPSTREAM"
+
+          if [ "$LOCAL" = "$UPSTREAM" ]; then
+            echo "Already up to date, nothing to sync."
+            echo "needs_sync=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Changes detected, proceeding with sync."
+            echo "needs_sync=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sync with upstream (merge)
+        if: steps.check.outputs.needs_sync == 'true' && inputs.strategy != 'rebase'
+        run: |
+          git merge "upstream/${{ env.UPSTREAM_BRANCH }}" \
+            -m "chore: sync fork with upstream/${{ env.UPSTREAM_BRANCH }}"
+
+      - name: Sync with upstream (rebase)
+        if: steps.check.outputs.needs_sync == 'true' && inputs.strategy == 'rebase'
+        run: |
+          git rebase "upstream/${{ env.UPSTREAM_BRANCH }}"
+
+      - name: Push changes
+        if: steps.check.outputs.needs_sync == 'true'
+        run: |
+          git push origin "HEAD:${{ github.ref_name }}"
+
+      - name: Create issue on conflict
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ['sync-conflict'],
+              state: 'open',
+            });
+
+            if (issues.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `⚠️ Fork sync conflict with upstream/${process.env.UPSTREAM_BRANCH}`,
+                body: [
+                  '与上游仓库同步时发生冲突，需要手动解决。',
+                  '',
+                  '**上游仓库**: ' + process.env.UPSTREAM_REPO,
+                  '**分支**: ' + process.env.UPSTREAM_BRANCH,
+                  '**运行日志**: ' + process.env.GITHUB_SERVER_URL + '/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + process.env.GITHUB_RUN_ID,
+                  '',
+                  '### 手动解决步骤',
+                  '```bash',
+                  'git remote add upstream https://github.com/' + process.env.UPSTREAM_REPO + '.git',
+                  'git fetch upstream ' + process.env.UPSTREAM_BRANCH,
+                  'git merge upstream/' + process.env.UPSTREAM_BRANCH,
+                  '# 解决冲突后:',
+                  'git push origin main',
+                  '```',
+                ].join('\n'),
+                labels: ['sync-conflict'],
+              });
+              console.log('Conflict issue created.');
+            } else {
+              console.log('Conflict issue already exists, skipping.');
+            }
