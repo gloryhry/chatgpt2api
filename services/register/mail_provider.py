@@ -55,7 +55,10 @@ def _next_domain(domains: list[str]) -> str:
 def _parse_received_at(value: Any) -> datetime | None:
     if isinstance(value, (int, float)):
         try:
-            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+            v = float(value)
+            if v > 10000000000:
+                v = v / 1000.0
+            return datetime.fromtimestamp(v, tz=timezone.utc)
         except Exception:
             return None
     text = str(value or "").strip()
@@ -136,7 +139,7 @@ def _extract_code(message: dict[str, Any]) -> str | None:
     match = re.search(r"background-color:\s*#F3F3F3[^>]*>[\s\S]*?(\d{6})[\s\S]*?</p>", content, re.I)
     if match:
         return match.group(1)
-    match = re.search(r"(?:Verification code|code is|代码为|验证码)[:\s]*(\d{6})", content, re.I)
+    match = re.search(r"(?:verification code|code is|enter this code|enter the code|代码为|验证码)[:\s]*(\d{6})", content, re.I)
     if match and match.group(1) != "177010":
         return match.group(1)
     for code in re.findall(r">\s*(\d{6})\s*<|(?<![#&])\b(\d{6})\b", content):
@@ -403,7 +406,8 @@ class MoEmailProvider(BaseMailProvider):
             self.domain = [str(item).strip() for item in raw_domains if str(item).strip()]
         else:
             self.domain = [str(raw_domains).strip()] if str(raw_domains).strip() else []
-        self.expiry_time = int(entry.get("expiry_time") or 0)
+        raw = entry.get("expiry_time")
+        self.expiry_time = int(raw) if raw is not None else 3600000
         self.subdomain = str(entry.get("subdomain") or "").strip() or None
         self.random_subdomain = bool(entry.get("random_subdomain"))
         self.session = curl_requests.Session(impersonate="chrome")
@@ -442,15 +446,15 @@ class MoEmailProvider(BaseMailProvider):
         messages = [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
         if not messages:
             return None
-        _, item = max(enumerate(messages), key=lambda pair: (((_parse_received_at(pair[1].get("createdAt") or pair[1].get("created_at") or pair[1].get("receivedAt") or pair[1].get("date") or pair[1].get("timestamp")) or datetime.fromtimestamp(0, tz=timezone.utc)).timestamp()), pair[0]))
+        _, item = max(enumerate(messages), key=lambda pair: (((_parse_received_at(pair[1].get("received_at") or pair[1].get("createdAt") or pair[1].get("created_at") or pair[1].get("receivedAt") or pair[1].get("date") or pair[1].get("timestamp")) or datetime.fromtimestamp(0, tz=timezone.utc)).timestamp()), pair[0]))
         message_id = str(item.get("id") or item.get("message_id") or item.get("_id") or "").strip()
         detail = self._request("GET", f"/api/emails/{email_id}/{message_id}") if message_id else {"message": item}
         message = detail.get("message") if isinstance(detail.get("message"), dict) else detail
         text_content, html_content = _extract_content(message)
-        sender = message.get("from") or message.get("sender") or ""
+        sender = message.get("from") or message.get("from_address") or message.get("sender") or ""
         if isinstance(sender, dict):
             sender = sender.get("address") or sender.get("email") or sender.get("name") or ""
-        return {"provider": self.name, "mailbox": mailbox["address"], "message_id": message_id, "subject": str(message.get("subject") or item.get("subject") or ""), "sender": str(sender), "text_content": text_content, "html_content": html_content, "received_at": _parse_received_at(message.get("createdAt") or message.get("created_at") or message.get("receivedAt") or message.get("date") or message.get("timestamp") or item.get("createdAt") or item.get("created_at") or item.get("receivedAt") or item.get("date") or item.get("timestamp")), "raw": detail}
+        return {"provider": self.name, "mailbox": mailbox["address"], "message_id": message_id, "subject": str(message.get("subject") or item.get("subject") or ""), "sender": str(sender), "text_content": text_content, "html_content": html_content, "received_at": _parse_received_at(message.get("received_at") or message.get("createdAt") or message.get("created_at") or message.get("receivedAt") or message.get("date") or message.get("timestamp") or item.get("received_at") or item.get("createdAt") or item.get("created_at") or item.get("receivedAt") or item.get("date") or item.get("timestamp")), "raw": detail}
 
     def close(self) -> None:
         self.session.close()
