@@ -49,7 +49,7 @@ export function RegisterCard() {
       enable: true,
       ...(type === "cloudflare_temp_email" ? { api_base: "", admin_password: "", domain: [] } : {}),
       ...(type === "tempmail_lol" ? { api_key: "", domain: [] } : {}),
-      ...(type === "moemail" ? { api_base: "", api_key: "", domain: [] } : {}),
+      ...(type === "moemail" ? { api_base: "", api_key: "", domain: [], subdomain: "", random_subdomain: false } : {}),
       ...(type === "duckmail" ? { api_key: "", default_domain: "duckmail.sbs" } : {}),
       ...(type === "gptmail" ? { api_key: "", default_domain: "" } : {}),
       ...(type === "yyds_mail" ? { api_base: "https://maliapi.215.im/v1", api_key: "", domain: [], subdomain: "", wildcard: false } : {}),
@@ -199,6 +199,18 @@ export function RegisterCard() {
                           <label className="text-sm text-stone-700">Default Domain</label>
                           <Input value={String(provider.default_domain || "")} onChange={(event) => updateProvider(index, { default_domain: event.target.value })} placeholder={type === "duckmail" ? "duckmail.sbs" : ""} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} />
                         </div>
+                      ) : null}
+                      {type === "moemail" ? (
+                        <>
+                          <div className="space-y-2">
+                            <label className="text-sm text-stone-700">Subdomain</label>
+                            <Input value={String(provider.subdomain || "")} onChange={(event) => updateProvider(index, { subdomain: event.target.value })} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} />
+                          </div>
+                          <label className="flex items-center gap-3 pt-8 text-sm text-stone-700">
+                            <Checkbox checked={Boolean(provider.random_subdomain)} onCheckedChange={(checked) => updateProvider(index, { random_subdomain: Boolean(checked) })} disabled={config.enabled} />
+                            随机 Subdomain
+                          </label>
+                        </>
                       ) : null}
                       {type === "yyds_mail" ? (
                         <>

@@ -16,6 +16,8 @@ edit
 docker-compose-local.yml
 
 .claude/settings.local.json
+CLAUDE.md
+.spec-workflow
 
 # Environment variables
 .env
@@ -28,3 +30,5 @@ docker-compose-local.yml
 
 # Git cache
 git_cache/
+
+.vscode

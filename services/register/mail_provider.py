@@ -404,6 +404,8 @@ class MoEmailProvider(BaseMailProvider):
         else:
             self.domain = [str(raw_domains).strip()] if str(raw_domains).strip() else []
         self.expiry_time = int(entry.get("expiry_time") or 0)
+        self.subdomain = str(entry.get("subdomain") or "").strip() or None
+        self.random_subdomain = bool(entry.get("random_subdomain"))
         self.session = curl_requests.Session(impersonate="chrome")
 
     def _request(self, method: str, path: str, params: dict | None = None, payload: dict | None = None, expected: tuple[int, ...] = (200,)):
@@ -416,7 +418,15 @@ class MoEmailProvider(BaseMailProvider):
         return data
 
     def create_mailbox(self, username: str | None = None) -> dict[str, Any]:
-        data = self._request("POST", "/api/emails/generate", payload={"name": username or _random_mailbox_name(), "expiryTime": self.expiry_time, "domain": _next_domain(self.domain)}, expected=(200, 201))
+        payload: dict[str, Any] = {
+            "name": username or _random_mailbox_name(),
+            "expiryTime": self.expiry_time,
+            "domain": _next_domain(self.domain),
+        }
+        subdomain = _random_subdomain_label() if self.random_subdomain else self.subdomain
+        if subdomain:
+            payload["subdomain"] = subdomain
+        data = self._request("POST", "/api/emails/generate", payload=payload, expected=(200, 201))
         address = str(data.get("email") or "").strip()
         email_id = str(data.get("id") or data.get("email_id") or "").strip()
         if not address or not email_id:
