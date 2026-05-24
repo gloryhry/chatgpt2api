@@ -147,12 +147,52 @@ def _sources_from_value(value: object) -> list[ImageSource]:
     raise HTTPException(status_code=400, detail={"error": "invalid image reference"})
 
 
+def _json_sources_from_value(value: object, index: int = 1) -> list[ImageSource]:
+    value = _json_reference_value(value)
+    if _is_upload(value):
+        return [value]
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        if text.lower().startswith("data:"):
+            return [_decode_data_url(text, f"image_{index}")]
+        if text.lower().startswith(("http://", "https://")):
+            raise HTTPException(status_code=400, detail={"error": "remote image URLs are not supported"})
+        return [_decode_base64_image(text, f"image_{index}.png", "image/png")]
+    if isinstance(value, list):
+        sources: list[ImageSource] = []
+        for item_index, item in enumerate(value, start=1):
+            sources.extend(_json_sources_from_value(item, item_index))
+        return sources
+    if isinstance(value, dict):
+        if value.get("file_id"):
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "file_id image references are not supported; use image_url instead"},
+            )
+        inline = value.get("b64_json") or value.get("base64")
+        if inline:
+            mime_type = _clean(value.get("mime_type") or value.get("mimeType"), "image/png")
+            filename = _clean(value.get("filename") or value.get("file_name"), f"image_{index}.{_extension_from_mime(mime_type)}")
+            return [_decode_base64_image(inline, filename, mime_type)]
+        if "image_url" in value or "url" in value:
+            image_url = value.get("image_url", value.get("url"))
+            if isinstance(image_url, dict):
+                image_url = image_url.get("url")
+            return _json_sources_from_value(image_url, index)
+        raise HTTPException(status_code=400, detail={"error": "image reference must include image_url"})
+    if value is None:
+        return []
+    raise HTTPException(status_code=400, detail={"error": "invalid image reference"})
+
+
 def _json_image_sources(body: dict[str, Any]) -> list[ImageSource]:
     """读取 JSON 图片引用：优先支持官方 images 数组字段。"""
     sources: list[ImageSource] = []
     for key in ("images", "image", "image_url"):
         if key in body:
-            sources.extend(_sources_from_value(body.get(key)))
+            sources.extend(_json_sources_from_value(body.get(key), len(sources) + 1))
     return sources
 
 
@@ -199,7 +239,7 @@ def _safe_filename(name: str, mime_type: str, fallback: str) -> str:
     return cleaned
 
 
-def _decode_data_url(url: str) -> ImageInput:
+def _decode_data_url(url: str, filename_stem: str = "image_url") -> ImageInput:
     """解码 data URL：把内联图片转成标准图片输入元组。"""
     header, separator, payload = url.partition(",")
     if not separator:
@@ -215,7 +255,7 @@ def _decode_data_url(url: str) -> ImageInput:
         raise HTTPException(status_code=400, detail={"error": "image URL is empty"})
     if len(data) > MAX_IMAGE_REFERENCE_BYTES:
         raise HTTPException(status_code=400, detail={"error": "image URL exceeds 50MB limit"})
-    return data, f"image_url.{_extension_from_mime(mime_type)}", mime_type
+    return data, f"{filename_stem}.{_extension_from_mime(mime_type)}", mime_type
 
 
 def _response_mime_type(response: requests.Response, parsed_path: str) -> str:
@@ -289,5 +329,5 @@ async def read_image_sources(sources: list[ImageSource]) -> list[ImageInput]:
             continue
         images.append(await run_in_threadpool(_download_image_url, source))
     if not images:
-        raise HTTPException(status_code=400, detail={"error": "image file or image_url is required"})
+        raise HTTPException(status_code=400, detail={"error": "image file is required"})
     return images
