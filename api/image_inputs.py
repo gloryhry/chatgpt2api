@@ -103,7 +103,7 @@ def _decode_base64_image(value: object, filename: str, mime_type: str) -> ImageI
     return data, filename, mime_type
 
 
-def _source_from_object(value: dict[str, Any]) -> list[ImageSource]:
+def _source_from_object(value: dict[str, Any], fallback_stem: str = "image", allow_remote_urls: bool = True) -> list[ImageSource]:
     """提取图片引用对象：支持 image_url 或 url，明确拒绝 file_id。"""
     has_url = "image_url" in value or "url" in value
     if value.get("file_id"):
@@ -113,7 +113,7 @@ def _source_from_object(value: dict[str, Any]) -> list[ImageSource]:
         )
     inline = value.get("b64_json") or value.get("base64")
     if inline:
-        filename = _clean(value.get("filename") or value.get("file_name"), "image.png")
+        filename = _clean(value.get("filename") or value.get("file_name"), f"{fallback_stem}.png")
         mime_type = _clean(value.get("mime_type") or value.get("mimeType"), "image/png")
         return [_decode_base64_image(inline, filename, mime_type)]
     if not has_url:
@@ -121,10 +121,10 @@ def _source_from_object(value: dict[str, Any]) -> list[ImageSource]:
     image_url = value.get("image_url", value.get("url"))
     if isinstance(image_url, dict):
         image_url = image_url.get("url")
-    return _sources_from_value(image_url)
+    return _sources_from_value(image_url, fallback_stem=fallback_stem, allow_remote_urls=allow_remote_urls)
 
 
-def _sources_from_value(value: object) -> list[ImageSource]:
+def _sources_from_value(value: object, fallback_stem: str = "image", allow_remote_urls: bool = True) -> list[ImageSource]:
     """展开图片引用：把字符串、数组和对象统一成图片来源列表。"""
     value = _json_reference_value(value)
     if _is_upload(value):
@@ -133,16 +133,23 @@ def _sources_from_value(value: object) -> list[ImageSource]:
         text = value.strip()
         if not text:
             return []
-        if text.lower().startswith(("data:", "http://", "https://")):
+        lower_text = text.lower()
+        if lower_text.startswith("data:"):
+            return [_decode_data_url(text, fallback_stem)]
+        if lower_text.startswith(("http://", "https://")):
+            if not allow_remote_urls:
+                raise HTTPException(status_code=400, detail={"error": "remote image URLs are not supported"})
             return [text]
-        return [_decode_base64_image(text, "image.png", "image/png")]
+        return [_decode_base64_image(text, f"{fallback_stem}.png", "image/png")]
     if isinstance(value, list):
         sources: list[ImageSource] = []
-        for item in value:
-            sources.extend(_sources_from_value(item))
+        for index, item in enumerate(value, start=1):
+            sources.extend(
+                _sources_from_value(item, fallback_stem=f"image_{index}", allow_remote_urls=allow_remote_urls)
+            )
         return sources
     if isinstance(value, dict):
-        return _source_from_object(value)
+        return _source_from_object(value, fallback_stem=fallback_stem, allow_remote_urls=allow_remote_urls)
     if value is None:
         return []
     raise HTTPException(status_code=400, detail={"error": "invalid image reference"})
@@ -153,7 +160,7 @@ def _json_image_sources(body: dict[str, Any]) -> list[ImageSource]:
     sources: list[ImageSource] = []
     for key in ("images", "image", "image_url"):
         if key in body:
-            sources.extend(_sources_from_value(body.get(key)))
+            sources.extend(_sources_from_value(body.get(key), fallback_stem="image_1", allow_remote_urls=False))
     return sources
 
 
@@ -178,7 +185,8 @@ async def parse_image_edit_request(request: Request) -> tuple[dict[str, Any], li
     sources: list[ImageSource] = []
     for key, value in form.multi_items():
         if key in IMAGE_REFERENCE_FIELDS:
-            sources.extend(_sources_from_value(value))
+            fallback_stem = "image_url" if key.startswith("image_url") else "image"
+            sources.extend(_sources_from_value(value, fallback_stem=fallback_stem))
     return _payload_from_fields(fields), sources
 
 
@@ -200,7 +208,7 @@ def _safe_filename(name: str, mime_type: str, fallback: str) -> str:
     return cleaned
 
 
-def _decode_data_url(url: str) -> ImageInput:
+def _decode_data_url(url: str, fallback_stem: str = "image_url") -> ImageInput:
     """解码 data URL：把内联图片转成标准图片输入元组。"""
     header, separator, payload = url.partition(",")
     if not separator:
@@ -216,7 +224,7 @@ def _decode_data_url(url: str) -> ImageInput:
         raise HTTPException(status_code=400, detail={"error": "image URL is empty"})
     if len(data) > MAX_IMAGE_REFERENCE_BYTES:
         raise HTTPException(status_code=400, detail={"error": "image URL exceeds 50MB limit"})
-    return data, f"image_url.{_extension_from_mime(mime_type)}", mime_type
+    return data, _safe_filename(fallback_stem, mime_type, fallback_stem), mime_type
 
 
 def _response_mime_type(response: requests.Response, parsed_path: str) -> str:
@@ -290,5 +298,5 @@ async def read_image_sources(sources: list[ImageSource]) -> list[ImageInput]:
             continue
         images.append(await run_in_threadpool(_download_image_url, source))
     if not images:
-        raise HTTPException(status_code=400, detail={"error": "image file or image_url is required"})
+        raise HTTPException(status_code=400, detail={"error": "image file is required"})
     return images
